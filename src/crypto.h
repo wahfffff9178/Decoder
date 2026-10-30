@@ -46,4 +46,17 @@ namespace dec {
     Bytes randomBytes(size_t n);
     Nonce12 randomNonce();
 
+    class HmacSha256 {
+    public:
+        HmacSha256(const Key32& key);
+        void update(const void* data, size_t len);
+        void update(const std::vector<uint8_t>& d) { update(d.data(), d.size()); }
+        Key32 digest();
+    private:
+        Sha256 inner_;
+        Sha256 outer_;
+    };
+
+    Key32 hmacKeyFromMaster(const Key32& masterKey);
+
 } // namespace dec
