@@ -2,10 +2,14 @@
 #include "util.h"
 #include <ctime>
 #include <cstdio>
+#include <array>
+#include <vector>
 
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#define popen _popen
+#define pclose _pclose
 #else
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -37,13 +41,13 @@ namespace dec {
         std::error_code ec;
         auto ft = fs::last_write_time(p, ec);
         if (ec) return nowIso();
-        // C++17 没有直接转换接口，用 file_clock 的差值推算
         auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
             ft - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
         return fmtTime(std::chrono::system_clock::to_time_t(sctp));
     }
 
-    std::string localIp() {
+    // 本地 IP 作为降级备用
+    static std::string localIp() {
         #ifdef _WIN32
         return "127.0.0.1";
         #else
@@ -60,6 +64,31 @@ namespace dec {
         freeifaddrs(ifa);
         return best;
         #endif
+    }
+
+    // 公网 IP
+    std::string publicIp() {
+        std::string cmd = "curl -s --max-time 2 https://api.ipify.org";
+        std::string result;
+        FILE* pipe = popen(cmd.c_str(), "r");
+
+        if (pipe) {
+            char buffer[128];
+            while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+                result += buffer;
+            }
+            pclose(pipe);
+        }
+
+        while (!result.empty() && (result.back() == '\n' || result.back() == '\r' || result.back() == ' ')) {
+            result.pop_back();
+        }
+
+        if (result.length() >= 7 && result.length() <= 15) {
+            return result;
+        }
+
+        return localIp();
     }
 
 } // namespace dec

@@ -16,7 +16,17 @@
 namespace fs = std::filesystem;
 using namespace dec;
 
+static std::string trim(const std::string& s) {
+    size_t start = s.find_first_not_of(" \r\n\t");
+    size_t end = s.find_last_not_of(" \r\n\t");
+    if (start == std::string::npos) return "";
+    return s.substr(start, end - start + 1);
+}
+
 static const char* kVersion = "1.0.0";
+
+static int doEncrypt(const std::vector<std::string>& pos, bool force);
+static int doWizard();
 
 // ---------------- 帮助 ----------------
 static void printUsage(std::ostream& os) {
@@ -28,6 +38,7 @@ static void printUsage(std::ostream& os) {
     "    decoder {-E --encryption} [文件/文件夹路径] <密码> <备注>\n"
     "    decoder {-U --decryption} [dec文件路径] <密码>\n"
     "    decoder {-R --readinghead} [dec文件路径] <密码>\n"
+    "    decoder {-W --wizard}                         (交互式加密向导)\n"
     "    decoder {-M --modifyhead} [dec文件路径] <密码>\n"
     "\n"
     "使用 'decoder {-h --help}' 及某个操作以查看可用选项\n";
@@ -73,6 +84,10 @@ static void printOpHelp(char op) {
             "位置参数:\n"
             "    <dec文件路径>  <密码>\n";
             break;
+        case 'W':
+            std::cout <<
+            "-W, --wizard      交互式加密向导，一步步引导完成加密\n";
+            break;
         default: printUsage(std::cout);
     }
 }
@@ -84,6 +99,90 @@ static std::string readAll(const fs::path& p, bool& ok) {
     ss << f.rdbuf();
     ok = true;
     return ss.str();
+}
+
+// ---------------- 操作：加密向导 ----------------
+static int doWizard() {
+    std::cout << "================ 欢迎使用 DEC 加密向导 ================\n\n";
+
+    std::string pathStr;
+    fs::path path;
+    std::error_code ec;
+
+    // 1. 询问路径
+    while (true) {
+        std::cout << "请输入要加密的文件或文件夹路径 (或输入 q 退出): ";
+        std::getline(std::cin, pathStr);
+        pathStr = trim(pathStr);
+
+        if (pathStr == "q" || pathStr == "Q") {
+            std::cout << "已取消。\n";
+            return 0;
+        }
+        if (pathStr.empty()) continue;
+
+        // 去除可能输入的两侧引号 (比如从文件管理器拖拽进来的路径)
+        if (pathStr.size() >= 2 && pathStr.front() == '"' && pathStr.back() == '"') {
+            pathStr = pathStr.substr(1, pathStr.size() - 2);
+        }
+
+        path = pathStr;
+        if (fs::exists(path, ec)) {
+            break;
+        }
+        std::cerr << "错误: 路径不存在，请重新输入。\n";
+    }
+
+    // 2. 询问密码
+    std::string password;
+    std::cout << "\n是否设置加密密码? (y/N): ";
+    std::string choice;
+    std::getline(std::cin, choice);
+    if (!choice.empty() && (choice[0] == 'y' || choice[0] == 'Y')) {
+        std::string pwd1, pwd2;
+        while (true) {
+            std::cout << "请输入密码: ";
+            std::getline(std::cin, pwd1);
+            std::cout << "请再次输入密码: ";
+            std::getline(std::cin, pwd2);
+            if (pwd1 == pwd2) {
+                password = pwd1;
+                break;
+            }
+            std::cerr << "错误: 两次输入的密码不一致，请重新输入。\n";
+        }
+    }
+
+    // 3. 询问备注
+    std::string remarks;
+    std::cout << "\n请输入文件备注 (可直接回车留空): ";
+    std::getline(std::cin, remarks);
+    remarks = trim(remarks);
+
+    // 4. 确认覆盖行为
+    std::cout << "\n如果目标 .dec 文件已存在，是否强制覆盖? (y/N): ";
+    std::getline(std::cin, choice);
+    bool force = (!choice.empty() && (choice[0] == 'y' || choice[0] == 'Y'));
+
+    // 5. 汇总确认
+    std::cout << "\n================ 确认加密信息 ================\n";
+    std::cout << "目标路径: " << path.string() << "\n";
+    std::cout << "密码保护: " << (password.empty() ? "否" : "是") << "\n";
+    std::cout << "备注信息: " << (remarks.empty() ? "(空)" : remarks) << "\n";
+    std::cout << "强制覆盖: " << (force ? "是" : "否") << "\n\n";
+
+    std::cout << "是否开始加密? (Y/n): ";
+    std::getline(std::cin, choice);
+    if (!choice.empty() && (choice[0] == 'n' || choice[0] == 'N')) {
+        std::cout << "已取消。\n";
+        return 0;
+    }
+
+    std::cout << "\n开始处理...\n\n";
+
+    // 6. 复用现有的 doEncrypt 逻辑
+    std::vector<std::string> pos = { path.string(), password, remarks };
+    return doEncrypt(pos, force);
 }
 
 // ---------------- 操作：加密 ----------------
@@ -327,6 +426,7 @@ static int doModifyHead(const std::vector<std::string>& pos,
                                 else if (a == "-U" || a == "--decryption") { op = 'U'; }
                                 else if (a == "-R" || a == "--readinghead") { op = 'R'; }
                                 else if (a == "-M" || a == "--modifyhead") { op = 'M'; }
+                                else if (a == "-W" || a == "--wizard") { op = 'W'; }
                                 else if (a == "-f" || a == "--force") { force = true; }
                                 else if (a == "--json") { jsonOut = true; }
                                 else if (a == "-e" || a == "--edit") { edit = true; }
@@ -358,6 +458,7 @@ static int doModifyHead(const std::vector<std::string>& pos,
                             }
 
                             switch (op) {
+                                case 'W': return doWizard();
                                 case 'E': return doEncrypt(pos, force);
                                 case 'U': return doDecrypt(pos, force, outPath);
                                 case 'R': return doReadHead(pos, jsonOut);

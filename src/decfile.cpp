@@ -119,7 +119,7 @@ namespace dec {
         Json h = Json::object();
         h.set("format",        (long long)kFormatVersion);
         h.set("remarks",       remarks);
-        h.set("source_ip",     localIp());
+        h.set("source_ip",     publicIp());
         h.set("original_name", src.filename().string());
         h.set("original_size", (long long)size);
         h.set("original_mtime", fileTimeIso(src));
