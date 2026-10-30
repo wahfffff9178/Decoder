@@ -20,16 +20,18 @@ namespace dec {
 
     std::string Json::getString(const std::string& k, const std::string& def) const {
         if (type_ != Type::Object) return def;
-        for (auto& kv : obj_)
+        for (auto& kv : obj_) {
             if (kv.first == k && kv.second.type_ == Type::String) return kv.second.s_;
-            return def;
+        }
+        return def;
     }
 
     long long Json::getInt(const std::string& k, long long def) const {
         if (type_ != Type::Object) return def;
-        for (auto& kv : obj_)
+        for (auto& kv : obj_) {
             if (kv.first == k && kv.second.type_ == Type::Number) return (long long)kv.second.n_;
-            return def;
+        }
+        return def;
     }
 
     static void dumpString(std::string& out, const std::string& s) {

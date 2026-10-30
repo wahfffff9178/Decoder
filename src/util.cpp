@@ -67,11 +67,26 @@ namespace dec {
     }
 
     // 公网 IP
+    // 公网 IP
     std::string publicIp() {
-        std::string cmd = "curl -s --max-time 2 https://api.ipify.org";
+        // 静态变量，保证整个程序运行期间只获取一次公网 IP
+        static bool fetched = false;
+        static std::string cachedIp;
+
+        if (fetched) return cachedIp;
+        fetched = true;
+
+        std::string cmd;
+        #ifdef _WIN32
+        // Windows 指定绝对路径，并隐藏错误输出
+        cmd = "C:\\Windows\\System32\\curl.exe -s --max-time 2 https://api.ipify.org 2>nul";
+        #else
+        // Linux/macOS 屏蔽标准错误
+        cmd = "curl -s --max-time 2 https://api.ipify.org 2>/dev/null";
+        #endif
+
         std::string result;
         FILE* pipe = popen(cmd.c_str(), "r");
-
         if (pipe) {
             char buffer[128];
             while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
@@ -85,10 +100,11 @@ namespace dec {
         }
 
         if (result.length() >= 7 && result.length() <= 15) {
-            return result;
+            cachedIp = result;
+        } else {
+            cachedIp = localIp(); // 获取失败静默降级为局域网 IP
         }
 
-        return localIp();
+        return cachedIp;
     }
-
 } // namespace dec

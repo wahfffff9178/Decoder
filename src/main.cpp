@@ -12,6 +12,9 @@
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace fs = std::filesystem;
 using namespace dec;
@@ -411,10 +414,13 @@ static int doModifyHead(const std::vector<std::string>& pos,
 
                         // ---------------- 入口 ----------------
                         int main(int argc, char** argv) {
+                            #ifdef _WIN32
+                            SetConsoleOutputCP(65001); // 设置控制台输出为 UTF-8，解决中文乱码
+                            #endif
                             char op = 0;
                             bool help = false, version = false;
                             bool force = false, jsonOut = false, edit = false;
-                            bool hasRemarks = false, hasIp = false, hasOut = false;
+                            bool hasRemarks = false, hasIp = false;
                             std::string remarks, ip, outPath;
                             std::vector<std::string> pos;
 
@@ -440,7 +446,7 @@ static int doModifyHead(const std::vector<std::string>& pos,
                                 }
                                 else if (a == "-o" || a == "--output") {
                                     if (i + 1 >= argc) { std::cerr << "错误: -o 缺少参数\n"; return 1; }
-                                    outPath = argv[++i]; hasOut = true;
+                                    outPath = argv[++i];
                                 }
                                 else if (!a.empty() && a[0] == '-' && a != "-") {
                                     std::cerr << "错误: 未知选项 " << a << " (使用 -h 获取帮助)\n";
