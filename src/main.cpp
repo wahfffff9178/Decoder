@@ -26,7 +26,7 @@ static std::string trim(const std::string& s) {
     return s.substr(start, end - start + 1);
 }
 
-static const char* kVersion = "1.0.0";
+static const char* kVersion = "2.0.1";
 
 static int doEncrypt(const std::vector<std::string>& pos, bool force);
 static int doWizard();
