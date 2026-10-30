@@ -1,9 +1,9 @@
-// ===================== src/decfile.cpp =====================
 #include "decfile.h"
 #include "util.h"
 #include <fstream>
 #include <cstring>
 #include <vector>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
@@ -11,17 +11,17 @@ namespace dec {
 
     static constexpr uint32_t kDefaultIterations = 100000;
     static constexpr size_t   kSaltLen = 16;
-    static constexpr size_t   kBlockMagic = 4;
 
     const char* decErrorText(DecError e) {
         switch (e) {
-            case DecError::Ok:           return "成功";
-            case DecError::NotDecFile:   return "这不是一个DEC加密文件";
-            case DecError::VersionTooNew:return "dec版本大于当前decoder版本：此版本不支持这个Dec文件";
-            case DecError::NeedPassword: return "此文件需要密码";
-            case DecError::WrongPassword:return "密码错误";
-            case DecError::BadHeader:    return "DEC 文件头已损坏";
-            case DecError::IoError:      return "文件读写错误";
+            case DecError::Ok:            return "成功";
+            case DecError::NotDecFile:    return "这不是一个DEC加密文件";
+            case DecError::VersionTooNew: return "dec版本大于当前decoder版本：此版本不支持这个Dec文件";
+            case DecError::NeedPassword:  return "此文件需要密码";
+            case DecError::WrongPassword: return "密码错误";
+            case DecError::BadHeader:     return "DEC 文件头已损坏";
+            case DecError::IoError:       return "文件读写错误";
+            case DecError::IntegrityFailed:return "文件已被篡改或损坏 (MAC 校验失败)";
         }
         return "未知错误";
     }
@@ -38,6 +38,19 @@ namespace dec {
         return base64Encode(k.data(), 8);
     }
 
+    // 构造 16 字节文件头
+    static void buildPre(uint8_t pre[16], uint8_t flags, uint32_t headerLen) {
+        std::memset(pre, 0, 16);
+        std::memcpy(pre, "DECF", 4);
+        pre[4] = kFormatVersion & 0xFF;
+        pre[5] = (kFormatVersion >> 8) & 0xFF;
+        pre[6] = flags;
+        pre[8] = headerLen & 0xFF;
+        pre[9] = (headerLen >> 8) & 0xFF;
+        pre[10] = (headerLen >> 16) & 0xFF;
+        pre[11] = (headerLen >> 24) & 0xFF;
+    }
+
     DecError readHeader(const fs::path& p, const std::string& password, HeaderInfo& out) {
         std::ifstream f(p, std::ios::binary);
         if (!f) return DecError::IoError;
@@ -49,6 +62,7 @@ namespace dec {
 
         uint16_t ver = (uint16_t)(pre[4] | (pre[5] << 8));
         if (ver > kFormatVersion) return DecError::VersionTooNew;
+        out.version = ver;
 
         uint8_t flags = pre[6];
         uint32_t headerLen = (uint32_t)pre[8] | ((uint32_t)pre[9] << 8) |
@@ -97,13 +111,11 @@ namespace dec {
         uintmax_t size = fs::file_size(src, ec);
         if (ec) { err = "无法读取源文件大小: " + ec.message(); return false; }
 
-        // ---- 生成密钥材料 ----
         Bytes  salt = randomBytes(kSaltLen);
         Nonce12 hNonce = randomNonce();
         Bytes  bNonce = randomBytes(12);
         Key32  key  = deriveKey(password, salt, kDefaultIterations);
 
-        // ---- 头部 JSON ----
         Json h = Json::object();
         h.set("format",        (long long)kFormatVersion);
         h.set("remarks",       remarks);
@@ -134,28 +146,25 @@ namespace dec {
         hblock.push_back((uint8_t)(it >> 24));
         hblock.insert(hblock.end(), plain.begin(), plain.end());
 
-        // ---- 写文件 ----
         fs::path tmp = dst;
         tmp += ".part";
         std::ofstream out(tmp, std::ios::binary);
         if (!out) { err = "无法创建输出文件"; return false; }
 
-        out.write("DECF", 4);
-        out.put((char)(kFormatVersion & 0xFF));
-        out.put((char)((kFormatVersion >> 8) & 0xFF));
         uint8_t flags = kFlagHeaderEncrypted;
         if (!password.empty()) flags |= kFlagHasPassword;
-        out.put((char)flags);
-        out.put((char)0);
-        uint32_t hl = (uint32_t)hblock.size();
-        out.put((char)(hl & 0xFF));
-        out.put((char)((hl >> 8) & 0xFF));
-        out.put((char)((hl >> 16) & 0xFF));
-        out.put((char)((hl >> 24) & 0xFF));
-        out.put(0); out.put(0); out.put(0); out.put(0);
+        uint8_t pre[16];
+        buildPre(pre, flags, (uint32_t)hblock.size());
+
+        out.write((const char*)pre, 16);
         out.write((const char*)hblock.data(), (std::streamsize)hblock.size());
 
-        // ---- 正文流式加密 ----
+        // 初始化 HMAC
+        Key32 macKey = hmacKeyFromMaster(key);
+        HmacSha256 hmac(macKey);
+        hmac.update(pre, 16);
+        hmac.update(hblock);
+
         Nonce12 bn;
         std::memcpy(bn.data(), bNonce.data(), 12);
         ChaCha20 bc(bodyKey(key), bn, 1);
@@ -170,17 +179,22 @@ namespace dec {
             if (n <= 0) break;
             bc.xorData((uint8_t*)buf.data(), (size_t)n);
             out.write(buf.data(), n);
+            hmac.update(buf.data(), (size_t)n);
         }
+
+        // 写入 MAC
+        Key32 mac = hmac.digest();
+        out.write((const char*)mac.data(), kMacLen);
+
         out.flush();
         if (!out) { out.close(); fs::remove(tmp); err = "写入失败"; return false; }
         out.close();
 
-        std::error_code rec;
-        fs::rename(tmp, dst, rec);
-        if (rec) {
+        fs::rename(tmp, dst, ec);
+        if (ec) {
             fs::remove(dst, ec);
-            fs::rename(tmp, dst, rec);
-            if (rec) { fs::remove(tmp); err = "无法写入目标文件: " + rec.message(); return false; }
+            fs::rename(tmp, dst, ec);
+            if (ec) { fs::remove(tmp); err = "无法写入目标文件: " + ec.message(); return false; }
         }
         return true;
                      }
@@ -190,13 +204,53 @@ namespace dec {
                          Bytes bNonce;
                          if (!base64Decode(bnStr, bNonce) || bNonce.size() != 12) return DecError::BadHeader;
 
+                         std::ifstream in(src, std::ios::binary);
+                         if (!in) return DecError::IoError;
+
+                         in.seekg(0, std::ios::end);
+                         uint64_t fileSize = in.tellg();
+
+                         // v2 及以上有 MAC 校验，v1 无
+                         bool hasMac = (h.version >= 2 && fileSize >= h.bodyOffset + kMacLen);
+                         uint64_t cipherLen = fileSize - h.bodyOffset - (hasMac ? kMacLen : 0);
+
+                         if (hasMac) {
+                             in.seekg(0, std::ios::beg);
+                             Key32 macKey = hmacKeyFromMaster(h.key);
+                             HmacSha256 hmac(macKey);
+
+                             uint8_t pre[16];
+                             in.read((char*)pre, 16);
+                             hmac.update(pre, 16);
+
+                             Bytes hb(h.headerLen);
+                             in.read((char*)hb.data(), h.headerLen);
+                             hmac.update(hb);
+
+                             std::vector<char> buf(64 * 1024);
+                             uint64_t remain = cipherLen;
+                             while (remain > 0) {
+                                 size_t toRead = (size_t)std::min<uint64_t>(remain, buf.size());
+                                 in.read(buf.data(), toRead);
+                                 hmac.update(buf.data(), toRead);
+                                 remain -= toRead;
+                             }
+
+                             uint8_t expectedMac[32];
+                             in.read((char*)expectedMac, kMacLen);
+                             Key32 actualMac = hmac.digest();
+
+                             if (std::memcmp(expectedMac, actualMac.data(), kMacLen) != 0) {
+                                 return DecError::IntegrityFailed;
+                             }
+                         }
+
                          Nonce12 bn;
                          std::memcpy(bn.data(), bNonce.data(), 12);
                          ChaCha20 cc(bodyKey(h.key), bn, 1);
 
-                         std::ifstream in(src, std::ios::binary);
-                         if (!in) return DecError::IoError;
-                         in.seekg((std::streamoff)h.bodyOffset);
+                         in.clear();
+                         in.seekg((std::streamoff)h.bodyOffset, std::ios::beg);
 
                          fs::path tmp = dst;
                          tmp += ".part";
@@ -204,13 +258,16 @@ namespace dec {
                          if (!out) return DecError::IoError;
 
                          std::vector<char> buf(64 * 1024);
-                         while (in) {
-                             in.read(buf.data(), (std::streamsize)buf.size());
-                             std::streamsize n = in.gcount();
-                             if (n <= 0) break;
-                             cc.xorData((uint8_t*)buf.data(), (size_t)n);
-                             out.write(buf.data(), n);
+                         uint64_t remain = cipherLen;
+                         while (remain > 0) {
+                             size_t toRead = (size_t)std::min<uint64_t>(remain, buf.size());
+                             in.read(buf.data(), toRead);
+                             if (in.gcount() <= 0) break;
+                             cc.xorData((uint8_t*)buf.data(), toRead);
+                             out.write(buf.data(), toRead);
+                             remain -= toRead;
                          }
+
                          out.flush();
                          if (!out) { out.close(); fs::remove(tmp); return DecError::IoError; }
                          out.close();
@@ -247,39 +304,50 @@ namespace dec {
 
                          std::ifstream in(p, std::ios::binary);
                          if (!in) { err = "无法打开文件"; return false; }
-                         in.seekg((std::streamoff)h.bodyOffset);
+
+                         in.seekg(0, std::ios::end);
+                         uint64_t oldFileSize = in.tellg();
+                         uint64_t cipherLen = oldFileSize - h.bodyOffset - (h.version >= 2 ? kMacLen : 0);
+                         in.seekg((std::streamoff)h.bodyOffset, std::ios::beg);
 
                          fs::path tmp = p;
                          tmp += ".tmp";
                          std::ofstream out(tmp, std::ios::binary);
                          if (!out) { err = "无法创建临时文件"; return false; }
 
-                         out.write("DECF", 4);
-                         out.put((char)(kFormatVersion & 0xFF));
-                         out.put((char)((kFormatVersion >> 8) & 0xFF));
                          uint8_t flags = kFlagHeaderEncrypted;
                          if (h.hasPassword) flags |= kFlagHasPassword;
-                         out.put((char)flags);
-                         out.put((char)0);
-                         uint32_t hl = (uint32_t)hblock.size();
-                         out.put((char)(hl & 0xFF));
-                         out.put((char)((hl >> 8) & 0xFF));
-                         out.put((char)((hl >> 16) & 0xFF));
-                         out.put((char)((hl >> 24) & 0xFF));
-                         out.put(0); out.put(0); out.put(0); out.put(0);
+                         uint8_t pre[16];
+                         buildPre(pre, flags, (uint32_t)hblock.size());
+
+                         out.write((const char*)pre, 16);
                          out.write((const char*)hblock.data(), (std::streamsize)hblock.size());
 
+                         // 构造新的 HMAC
+                         Key32 macKey = hmacKeyFromMaster(h.key);
+                         HmacSha256 hmac(macKey);
+                         hmac.update(pre, 16);
+                         hmac.update(hblock);
+
                          std::vector<char> buf(64 * 1024);
-                         while (in) {
-                             in.read(buf.data(), (std::streamsize)buf.size());
-                             std::streamsize n = in.gcount();
-                             if (n <= 0) break;
-                             out.write(buf.data(), n);
+                         uint64_t remain = cipherLen;
+                         while (remain > 0) {
+                             size_t toRead = (size_t)std::min<uint64_t>(remain, buf.size());
+                             in.read(buf.data(), toRead);
+                             if (in.gcount() <= 0) break;
+                             out.write(buf.data(), toRead);
+                             hmac.update(buf.data(), toRead);
+                             remain -= toRead;
                          }
+
+                         Key32 mac = hmac.digest();
+                         out.write((const char*)mac.data(), kMacLen);
+
                          out.flush();
                          bool ok = (bool)out;
                          out.close();
                          in.close();
+
                          if (!ok) { fs::remove(tmp); err = "写入失败"; return false; }
 
                          std::error_code ec;

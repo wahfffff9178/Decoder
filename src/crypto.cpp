@@ -219,5 +219,33 @@ namespace dec {
             std::memcpy(n.data(), b.data(), 12);
             return n;
         }
+        // ---------------- HMAC-SHA256 ----------------
+        HmacSha256::HmacSha256(const Key32& key) {
+            uint8_t ipad[64], opad[64];
+            for (int i = 0; i < 64; i++) {
+                uint8_t k = (i < 32) ? key[i] : 0;
+                ipad[i] = k ^ 0x36;
+                opad[i] = k ^ 0x5C;
+            }
+            inner_.update(ipad, 64);
+            outer_.update(opad, 64);
+        }
+
+        void HmacSha256::update(const void* data, size_t len) {
+            inner_.update(data, len);
+        }
+
+        Key32 HmacSha256::digest() {
+            Key32 innerHash = inner_.digest();
+            outer_.update(innerHash.data(), 32);
+            return outer_.digest();
+        }
+
+        Key32 hmacKeyFromMaster(const Key32& masterKey) {
+            static const char tag[] = "DECF-MAC-KEY";
+            Bytes b(tag, tag + sizeof(tag) - 1);
+            b.insert(b.end(), masterKey.begin(), masterKey.end());
+            return Sha256::hash(b.data(), b.size());
+        }
 
 } // namespace dec
