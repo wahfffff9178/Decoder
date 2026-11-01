@@ -39,7 +39,7 @@ static void printUsage(std::ostream& os) {
     "    decoder {-h --help}\n"
     "    decoder {-V --version}\n"
     "    decoder {-E --encryption} [文件/文件夹路径] <密码> <备注>\n"
-    "    decoder {-U --decryption} [dec文件路径] <密码>\n"
+    "    decoder {-D -U --decryption} [dec文件路径] <密码>\n"
     "    decoder {-R --readinghead} [dec文件路径] <密码>\n"
     "    decoder {-W --wizard}                         (交互式加密向导)\n"
     "    decoder {-M --modifyhead} [dec文件路径] <密码>\n"
@@ -432,7 +432,7 @@ static int doModifyHead(const std::vector<std::string>& pos,
                                 if (a == "-h" || a == "--help") { help = true; }
                                 else if (a == "-V" || a == "--version") { version = true; }
                                 else if (a == "-E" || a == "--encryption") { op = 'E'; }
-                                else if (a == "-U" || a == "--decryption") { op = 'U'; }
+                                else if (a == "-U" || a == "-D" || a == "--decryption") { op = 'U'; }
                                 else if (a == "-R" || a == "--readinghead") { op = 'R'; }
                                 else if (a == "-M" || a == "--modifyhead") { op = 'M'; }
                                 else if (a == "-W" || a == "--wizard") { op = 'W'; }
