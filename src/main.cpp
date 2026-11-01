@@ -26,7 +26,7 @@ static std::string trim(const std::string& s) {
     return s.substr(start, end - start + 1);
 }
 
-static const char* kVersion = "2.0.1";
+static const char* kVersion = "2.0.2";
 
 static int doEncrypt(const std::vector<std::string>& pos, bool force);
 static int doWizard();
@@ -124,9 +124,12 @@ static int doWizard() {
         }
         if (pathStr.empty()) continue;
 
-        // 去除可能输入的两侧引号 (比如从文件管理器拖拽进来的路径)
-        if (pathStr.size() >= 2 && pathStr.front() == '"' && pathStr.back() == '"') {
-            pathStr = pathStr.substr(1, pathStr.size() - 2);
+        // 去除可能输入的两侧引号 (包括单引号和双引号)
+        if (pathStr.size() >= 2) {
+            if ((pathStr.front() == '"' && pathStr.back() == '"') || 
+                (pathStr.front() == '\'' && pathStr.back() == '\'')) {
+                pathStr = pathStr.substr(1, pathStr.size() - 2);
+            }
         }
 
         path = pathStr;
