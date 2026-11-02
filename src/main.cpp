@@ -14,88 +14,242 @@
 #include <filesystem>
 #ifdef _WIN32
 #include <windows.h>
+#include <conio.h>
+#else
+#include <termios.h>
+#include <unistd.h>
+#include <csignal>
 #endif
 
 namespace fs = std::filesystem;
 using namespace dec;
 
-static std::string trim(const std::string& s) {
+static std::string trim(const std::string &s)
+{
     size_t start = s.find_first_not_of(" \r\n\t");
     size_t end = s.find_last_not_of(" \r\n\t");
-    if (start == std::string::npos) return "";
+    if (start == std::string::npos)
+        return "";
     return s.substr(start, end - start + 1);
 }
 
-static const char* kVersion = "2.0.2";
+#ifndef _WIN32
+static struct termios old_termios;
+static bool is_raw_mode = false;
 
-static int doEncrypt(const std::vector<std::string>& pos, bool force);
+void restore_terminal_handler(int sig)
+{
+    if (is_raw_mode)
+    {
+        tcsetattr(STDIN_FILENO, TCSANOW, &old_termios);
+        is_raw_mode = false;
+    }
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);
+}
+#endif
+
+// =====================================================================
+// 终极行编辑器：接管输入、完美支持中文/方向键/退格、每次按键整行重绘
+// =====================================================================
+static std::string readLine(const std::string &prompt, bool hide = false)
+{
+    std::cout << prompt;
+    std::string buf;
+    size_t cursor = 0;
+
+#ifdef _WIN32
+    char ch;
+    while ((ch = _getch()) != '\r')
+    {
+        if (ch == '\b') // 退格
+        {
+            if (cursor > 0)
+            {
+                size_t pos = cursor - 1;
+                while (pos > 0 && (buf[pos] & 0xC0) == 0x80) pos--; // UTF-8 退格
+                buf.erase(pos, cursor - pos);
+                cursor = pos;
+            }
+        }
+        else if (ch == 0 || ch == -32) // 方向键
+        {
+            char ext = _getch();
+            if (ext == 75 && cursor > 0) { // 左
+                cursor--;
+                while (cursor > 0 && (buf[cursor] & 0xC0) == 0x80) cursor--;
+            }
+            else if (ext == 77 && cursor < buf.size()) { // 右
+                cursor++;
+                while (cursor < buf.size() && (buf[cursor] & 0xC0) == 0x80) cursor++;
+            }
+        }
+        else if (ch >= 32) // 可见字符
+        {
+            buf.insert(cursor, 1, ch);
+            cursor++;
+            while (cursor < buf.size() && (buf[cursor] & 0xC0) == 0x80) cursor++;
+        }
+
+        std::cout << "\r\033[K" << prompt << (hide ? std::string(buf.size(), '*') : buf);
+        if (buf.size() > cursor) std::cout << "\033[" << (buf.size() - cursor) << "D";
+        std::cout << std::flush;
+    }
+    std::cout << "\r\033[K" << prompt << (hide ? std::string(buf.size(), '*') : buf) << "\n";
+#else
+    termios newt;
+    tcgetattr(STDIN_FILENO, &old_termios);
+    newt = old_termios;
+    newt.c_lflag &= ~(ICANON | ECHO); // 关闭规范模式和回显，完全接管
+    newt.c_lflag |= ISIG;             // 保留 Ctrl+C 中断
+    newt.c_cc[VMIN] = 1;
+    newt.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    is_raw_mode = true;
+
+    std::signal(SIGINT, restore_terminal_handler);
+    std::signal(SIGTERM, restore_terminal_handler);
+
+    int ch;
+    while ((ch = getchar()) != '\n' && ch != '\r')
+    {
+        if (ch == 127 || ch == 8) // 退格
+        {
+            if (cursor > 0)
+            {
+                size_t pos = cursor - 1;
+                while (pos > 0 && (buf[pos] & 0xC0) == 0x80) pos--;
+                buf.erase(pos, cursor - pos);
+                cursor = pos;
+            }
+        }
+        else if (ch == 27) // 方向键及控制序列
+        {
+            int seq1 = getchar();
+            if (seq1 == '[')
+            {
+                int seq2 = getchar();
+                if (seq2 == 'D') // 左
+                {
+                    if (cursor > 0) {
+                        cursor--;
+                        while (cursor > 0 && (buf[cursor] & 0xC0) == 0x80) cursor--;
+                    }
+                }
+                else if (seq2 == 'C') // 右
+                {
+                    if (cursor < buf.size()) {
+                        cursor++;
+                        while (cursor < buf.size() && (buf[cursor] & 0xC0) == 0x80) cursor++;
+                    }
+                }
+                else if (seq2 == 'H') cursor = 0; // Home
+                else if (seq2 == 'F') cursor = buf.size(); // End
+            }
+        }
+        else if (ch >= 32 || ch < 0) // 支持所有可见字符和 UTF-8 中文
+        {
+            buf.insert(cursor, 1, (char)ch);
+            cursor++;
+            while (cursor < buf.size() && (buf[cursor] & 0xC0) == 0x80) cursor++;
+        }
+
+        // 重绘整行
+        std::cout << "\r\033[K" << prompt;
+        if (hide) std::cout << std::string(buf.size(), '*');
+        else std::cout << buf;
+
+        if (buf.size() > cursor)
+            std::cout << "\033[" << (buf.size() - cursor) << "D";
+        std::cout << std::flush;
+    }
+    
+    // 回车退出后，重绘并换行
+    std::cout << "\r\033[K" << prompt;
+    if (hide) std::cout << std::string(buf.size(), '*');
+    else std::cout << buf;
+    std::cout << "\n"; // 只输出一个换行
+    
+    // 核心修复：清空缓冲区，防止遗留的 \n 导致后续出现大量空行
+    tcflush(STDIN_FILENO, TCIFLUSH); 
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &old_termios);
+    is_raw_mode = false;
+    std::signal(SIGINT, SIG_DFL);
+    std::signal(SIGTERM, SIG_DFL);
+#endif
+    return buf;
+}
+
+static const char *kVersion = "2.1.0";
+
+static int doEncrypt(const std::vector<std::string> &pos, bool force);
 static int doWizard();
 
 // ---------------- 帮助 ----------------
-static void printUsage(std::ostream& os) {
-    os <<
-    "用法:  decoder <操作> [...]\n"
-    "操作:\n"
-    "    decoder {-h --help}\n"
-    "    decoder {-V --version}\n"
-    "    decoder {-E --encryption} [文件/文件夹路径] <密码> <备注>\n"
-    "    decoder {-D -U --decryption} [dec文件路径] <密码>\n"
-    "    decoder {-R --readinghead} [dec文件路径] <密码>\n"
-    "    decoder {-W --wizard}                         (交互式加密向导)\n"
-    "    decoder {-M --modifyhead} [dec文件路径] <密码>\n"
-    "\n"
-    "使用 'decoder {-h --help}' 及某个操作以查看可用选项\n";
+static void printUsage(std::ostream &os)
+{
+    os << "用法:  decoder <操作> [...]\n"
+          "操作:\n"
+          "    decoder {-h --help}\n"
+          "    decoder {-V --version}\n"
+          "    decoder {-E --encryption} [文件/文件夹路径] <密码> <备注>\n"
+          "    decoder {-D -U --decryption} [dec文件路径] <密码>\n"
+          "    decoder {-R --readinghead} [dec文件路径] <密码>\n"
+          "    decoder {-W --wizard}                         (交互式加密向导)\n"
+          "    decoder {-M --modifyhead} [dec文件路径] <密码>\n"
+          "\n"
+          "使用 'decoder {-h --help}' 及某个操作以查看可用选项\n";
 }
 
-static void printOpHelp(char op) {
-    switch (op) {
-        case 'E':
-            std::cout <<
-            "-E, --encryption  加密文件或整个文件夹（递归处理，自动跳过 .dec 文件）\n"
-            "可用选项:\n"
-            "    -f, --force          覆盖已存在的 .dec 文件\n"
-            "位置参数:\n"
-            "    <路径>   要加密的文件或文件夹\n"
-            "    <密码>   加密密码，传 \"\" 表示无密码\n"
-            "    <备注>   写入加密头的备注文本\n";
-            break;
-        case 'U':
-            std::cout <<
-            "-U, --decryption  解密 .dec 文件，按头部记录的原始文件名还原\n"
-            "可用选项:\n"
-            "    -f, --force          覆盖已存在的目标文件\n"
-            "    -o, --output <路径>  指定输出文件或目录\n"
-            "位置参数:\n"
-            "    <dec文件路径>  <密码>\n";
-            break;
-        case 'R':
-            std::cout <<
-            "-R, --readinghead  只解密头部并输出摘要，不还原正文\n"
-            "可用选项:\n"
-            "    --json               输出完整 JSON 结构\n"
-            "位置参数:\n"
-            "    <dec文件路径>  <密码>\n";
-            break;
-        case 'M':
-            std::cout <<
-            "-M, --modifyhead  只重写加密头，正文密文原样保留\n"
-            "可用选项:\n"
-            "    --remarks <文本>     直接设置备注\n"
-            "    -i, --ip <地址>      设置源 IP\n"
-            "    -e, --edit           调用系统编辑器编辑头部 JSON\n"
-            "不带以上任何选项时进入交互式修改备注。\n"
-            "位置参数:\n"
-            "    <dec文件路径>  <密码>\n";
-            break;
-        case 'W':
-            std::cout <<
-            "-W, --wizard      交互式加密向导，一步步引导完成加密\n";
-            break;
-        default: printUsage(std::cout);
+static void printOpHelp(char op)
+{
+    switch (op)
+    {
+    case 'E':
+        std::cout << "-E, --encryption  加密文件或整个文件夹（递归处理，自动跳过 .dec 文件）\n"
+                     "可用选项:\n"
+                     "    -f, --force          覆盖已存在的 .dec 文件\n"
+                     "位置参数:\n"
+                     "    <路径>   要加密的文件或文件夹\n"
+                     "    <密码>   加密密码，传 \"\" 表示无密码\n"
+                     "    <备注>   写入加密头的备注文本\n";
+        break;
+    case 'U':
+        std::cout << "-U, --decryption  解密 .dec 文件，按头部记录的原始文件名还原\n"
+                     "可用选项:\n"
+                     "    -f, --force          覆盖已存在的目标文件\n"
+                     "    -o, --output <路径>  指定输出文件或目录\n"
+                     "位置参数:\n"
+                     "    <dec文件路径>  <密码>\n";
+        break;
+    case 'R':
+        std::cout << "-R, --readinghead  只解密头部并输出摘要，不还原正文\n"
+                     "可用选项:\n"
+                     "    --json               输出完整 JSON 结构\n"
+                     "位置参数:\n"
+                     "    <dec文件路径>  <密码>\n";
+        break;
+    case 'M':
+        std::cout << "-M, --modifyhead  只重写加密头，正文密文原样保留\n"
+                     "可用选项:\n"
+                     "    --remarks <文本>     直接设置备注\n"
+                     "    -i, --ip <地址>      设置源 IP\n"
+                     "    -e, --edit           调用系统编辑器编辑头部 JSON\n"
+                     "不带以上任何选项时进入交互式修改备注。\n"
+                     "位置参数:\n"
+                     "    <dec文件路径>  <密码>\n";
+        break;
+    case 'W':
+        std::cout << "-W, --wizard      交互式加密向导，一步步引导完成加密\n";
+        break;
+    default:
+        printUsage(std::cout);
     }
 }
 
-static std::string readAll(const fs::path& p, bool& ok) {
+static std::string readAll(const fs::path &p, bool &ok)
+{
     std::ifstream f(p, std::ios::binary);
     if (!f) { ok = false; return {}; }
     std::ostringstream ss;
@@ -105,7 +259,8 @@ static std::string readAll(const fs::path& p, bool& ok) {
 }
 
 // ---------------- 操作：加密向导 ----------------
-static int doWizard() {
+static int doWizard()
+{
     std::cout << "================ 欢迎使用 DEC 加密向导 ================\n\n";
 
     std::string pathStr;
@@ -113,45 +268,46 @@ static int doWizard() {
     std::error_code ec;
 
     // 1. 询问路径
-    while (true) {
-        std::cout << "请输入要加密的文件或文件夹路径 (或输入 q 退出): ";
-        std::getline(std::cin, pathStr);
+    while (true)
+    {
+        pathStr = readLine("请输入要加密的文件或文件夹路径 (或输入 q 退出): ");
         pathStr = trim(pathStr);
 
-        if (pathStr == "q" || pathStr == "Q") {
+        if (pathStr == "q" || pathStr == "Q")
+        {
             std::cout << "已取消。\n";
             return 0;
         }
-        if (pathStr.empty()) continue;
+        if (pathStr.empty())
+            continue;
 
-        // 去除可能输入的两侧引号 (包括单引号和双引号)
-        if (pathStr.size() >= 2) {
-            if ((pathStr.front() == '"' && pathStr.back() == '"') || 
-                (pathStr.front() == '\'' && pathStr.back() == '\'')) {
+        if (pathStr.size() >= 2)
+        {
+            if ((pathStr.front() == '"' && pathStr.back() == '"') ||
+                (pathStr.front() == '\'' && pathStr.back() == '\''))
+            {
                 pathStr = pathStr.substr(1, pathStr.size() - 2);
             }
         }
 
         path = pathStr;
-        if (fs::exists(path, ec)) {
-            break;
-        }
+        if (fs::exists(path, ec)) break;
         std::cerr << "错误: 路径不存在，请重新输入。\n";
     }
 
     // 2. 询问密码
     std::string password;
-    std::cout << "\n是否设置加密密码? (y/N): ";
-    std::string choice;
-    std::getline(std::cin, choice);
-    if (!choice.empty() && (choice[0] == 'y' || choice[0] == 'Y')) {
+    std::cout << "\n";
+    std::string choice = readLine("是否设置加密密码? (y/N): ");
+    if (!choice.empty() && (choice[0] == 'y' || choice[0] == 'Y'))
+    {
         std::string pwd1, pwd2;
-        while (true) {
-            std::cout << "请输入密码: ";
-            std::getline(std::cin, pwd1);
-            std::cout << "请再次输入密码: ";
-            std::getline(std::cin, pwd2);
-            if (pwd1 == pwd2) {
+        while (true)
+        {
+            pwd1 = readLine("请输入密码: ", true);
+            pwd2 = readLine("请再次输入密码: ", true);
+            if (pwd1 == pwd2)
+            {
                 password = pwd1;
                 break;
             }
@@ -160,14 +316,13 @@ static int doWizard() {
     }
 
     // 3. 询问备注
-    std::string remarks;
-    std::cout << "\n请输入文件备注 (可直接回车留空): ";
-    std::getline(std::cin, remarks);
+    std::cout << "\n";
+    std::string remarks = readLine("请输入文件备注 (可直接回车留空): ");
     remarks = trim(remarks);
 
     // 4. 确认覆盖行为
-    std::cout << "\n如果目标 .dec 文件已存在，是否强制覆盖? (y/N): ";
-    std::getline(std::cin, choice);
+    std::cout << "\n";
+    choice = readLine("如果目标 .dec 文件已存在，是否强制覆盖? (y/N): ");
     bool force = (!choice.empty() && (choice[0] == 'y' || choice[0] == 'Y'));
 
     // 5. 汇总确认
@@ -177,9 +332,9 @@ static int doWizard() {
     std::cout << "备注信息: " << (remarks.empty() ? "(空)" : remarks) << "\n";
     std::cout << "强制覆盖: " << (force ? "是" : "否") << "\n\n";
 
-    std::cout << "是否开始加密? (Y/n): ";
-    std::getline(std::cin, choice);
-    if (!choice.empty() && (choice[0] == 'n' || choice[0] == 'N')) {
+    choice = readLine("是否开始加密? (Y/n): ");
+    if (!choice.empty() && (choice[0] == 'n' || choice[0] == 'N'))
+    {
         std::cout << "已取消。\n";
         return 0;
     }
@@ -187,68 +342,80 @@ static int doWizard() {
     std::cout << "\n开始处理...\n\n";
 
     // 6. 复用现有的 doEncrypt 逻辑
-    std::vector<std::string> pos = { path.string(), password, remarks };
+    std::vector<std::string> pos = {path.string(), password, remarks};
     return doEncrypt(pos, force);
 }
 
 // ---------------- 操作：加密 ----------------
-static int doEncrypt(const std::vector<std::string>& pos, bool force) {
-    if (pos.size() < 3) {
+static int doEncrypt(const std::vector<std::string> &pos, bool force)
+{
+    if (pos.size() < 3)
+    {
         std::cerr << "错误: 参数不足，需要 <路径> <密码> <备注> (使用 -E -h 获取帮助)\n";
         return 1;
     }
     fs::path path = pos[0];
     std::string password = pos[1];
-    std::string remarks  = pos[2];
+    std::string remarks = pos[2];
 
     std::error_code ec;
-    if (!fs::exists(path, ec)) {
+    if (!fs::exists(path, ec))
+    {
         std::cerr << "错误: 路径不存在: " << path.string() << "\n";
         return 1;
     }
 
     std::vector<fs::path> files;
-    if (fs::is_directory(path, ec)) {
-        for (auto& e : fs::recursive_directory_iterator(
-            path, fs::directory_options::skip_permission_denied, ec)) {
+    if (fs::is_directory(path, ec))
+    {
+        for (auto &e : fs::recursive_directory_iterator(
+                 path, fs::directory_options::skip_permission_denied, ec))
+        {
             if (e.is_regular_file()) files.push_back(e.path());
-            }
-    } else {
-        files.push_back(path);
+        }
     }
+    else files.push_back(path);
 
     int ok = 0, skip = 0, fail = 0;
-    for (auto& f : files) {
+    for (auto &f : files)
+    {
         std::string name = f.filename().string();
-        if (name.size() >= 4 && name.compare(name.size() - 4, 4, ".dec") == 0) {
+        if (name.size() >= 4 && name.compare(name.size() - 4, 4, ".dec") == 0)
+        {
             std::cout << "[跳过] " << f.string() << " (已是 DEC 文件)\n";
             skip++;
             continue;
         }
         fs::path dst = f;
         dst += ".dec";
-        if (fs::exists(dst, ec) && !force) {
+        if (fs::exists(dst, ec) && !force)
+        {
             std::cout << "[跳过] " << dst.string() << " (目标已存在，使用 -f 覆盖)\n";
             skip++;
             continue;
         }
         std::string err;
-        if (encryptFile(f, dst, password, remarks, err)) {
+        if (encryptFile(f, dst, password, remarks, err))
+        {
             std::cout << "[完成] " << f.string() << " -> " << dst.string() << "\n";
             ok++;
-        } else {
+        }
+        else
+        {
             std::cerr << "[失败] " << f.string() << ": " << err << "\n";
             fail++;
         }
     }
     std::cout << "共 " << files.size() << " 个文件，成功 " << ok
-    << "，跳过 " << skip << "，失败 " << fail << "\n";
+              << "，跳过 " << skip << "，失败 " << fail << "\n";
     return fail ? 1 : 0;
 }
 
 // ---------------- 操作：解密 ----------------
-static int doDecrypt(const std::vector<std::string>& pos, bool force, const std::string& outPath) {
-    if (pos.empty()) {
+static int doDecrypt(const std::vector<std::string> &pos, bool force, const std::string &outPath)
+{
+    if (pos.empty())
+    {
         std::cerr << "错误: 缺少 <dec文件路径> (使用 -U -h 获取帮助)\n";
         return 1;
     }
@@ -257,7 +424,8 @@ static int doDecrypt(const std::vector<std::string>& pos, bool force, const std:
 
     HeaderInfo h;
     DecError e = readHeader(src, password, h);
-    if (e != DecError::Ok) {
+    if (e != DecError::Ok)
+    {
         std::cerr << "错误: " << decErrorText(e) << "\n";
         return 1;
     }
@@ -266,34 +434,37 @@ static int doDecrypt(const std::vector<std::string>& pos, bool force, const std:
     if (origName.empty()) origName = src.stem().string();
 
     fs::path dst;
-    if (!outPath.empty()) {
+    if (!outPath.empty())
+    {
         fs::path o = outPath;
         std::error_code ec;
         if (fs::is_directory(o, ec)) dst = o / origName;
         else dst = o;
-    } else {
-        dst = src.parent_path() / origName;
     }
+    else dst = src.parent_path() / origName;
 
     std::error_code ec;
-    if (fs::exists(dst, ec) && !force) {
+    if (fs::exists(dst, ec) && !force)
+    {
         std::cerr << "错误: 目标文件已存在: " << dst.string() << " (使用 -f 覆盖)\n";
         return 1;
     }
-    if (fs::equivalent(src, dst, ec)) {
+    if (fs::equivalent(src, dst, ec))
+    {
         std::cerr << "错误: 目标文件与源文件相同: " << dst.string() << "\n";
         return 1;
     }
 
     e = decryptBody(src, h, dst);
-    if (e != DecError::Ok) {
+    if (e != DecError::Ok)
+    {
         std::cerr << "错误: " << decErrorText(e) << "\n";
         return 1;
     }
 
     std::cout << "---------------Decryption complete---------------\n\n";
     std::cout << "Decryption file: " << src.string()
-    << " decrypted to target file " << dst.string() << "\n";
+              << " decrypted to target file " << dst.string() << "\n";
     std::cout << "Encryption Header   : \"" << h.json.getString("remarks") << "\"\n";
     std::cout << "Encryption Source IP: \"" << h.json.getString("source_ip") << "\"\n";
     std::cout << "\n------------------------------------------------------\n";
@@ -301,8 +472,10 @@ static int doDecrypt(const std::vector<std::string>& pos, bool force, const std:
 }
 
 // ---------------- 操作：读头 ----------------
-static int doReadHead(const std::vector<std::string>& pos, bool jsonOut) {
-    if (pos.empty()) {
+static int doReadHead(const std::vector<std::string> &pos, bool jsonOut)
+{
+    if (pos.empty())
+    {
         std::cerr << "错误: 缺少 <dec文件路径> (使用 -R -h 获取帮助)\n";
         return 1;
     }
@@ -311,12 +484,14 @@ static int doReadHead(const std::vector<std::string>& pos, bool jsonOut) {
 
     HeaderInfo h;
     DecError e = readHeader(src, password, h);
-    if (e != DecError::Ok) {
+    if (e != DecError::Ok)
+    {
         std::cerr << "错误: " << decErrorText(e) << "\n";
         return 1;
     }
 
-    if (jsonOut) {
+    if (jsonOut)
+    {
         Json out = Json::object();
         out.set("file", src.string());
         out.set("format_version", (long long)kFormatVersion);
@@ -338,11 +513,13 @@ static int doReadHead(const std::vector<std::string>& pos, bool jsonOut) {
 }
 
 // ---------------- 操作：改头 ----------------
-static int doModifyHead(const std::vector<std::string>& pos,
-                        bool hasRemarks, const std::string& remarks,
-                        bool hasIp, const std::string& ip,
-                        bool edit) {
-    if (pos.empty()) {
+static int doModifyHead(const std::vector<std::string> &pos,
+                        bool hasRemarks, const std::string &remarks,
+                        bool hasIp, const std::string &ip,
+                        bool edit)
+{
+    if (pos.empty())
+    {
         std::cerr << "错误: 缺少 <dec文件路径> (使用 -M -h 获取帮助)\n";
         return 1;
     }
@@ -351,7 +528,8 @@ static int doModifyHead(const std::vector<std::string>& pos,
 
     HeaderInfo h;
     DecError e = readHeader(src, password, h);
-    if (e != DecError::Ok) {
+    if (e != DecError::Ok)
+    {
         std::cerr << "错误: " << decErrorText(e) << "\n";
         return 1;
     }
@@ -361,18 +539,23 @@ static int doModifyHead(const std::vector<std::string>& pos,
     long long   origSize  = h.json.getInt("original_size");
     std::string bodyNonce = h.json.getString("body_nonce");
 
-    if (hasRemarks) {
+    if (hasRemarks)
+    {
         j.set("remarks", remarks);
-    } else if (hasIp) {
+    }
+    else if (hasIp)
+    {
         j.set("source_ip", ip);
-    } else if (edit) {
+    }
+    else if (edit)
+    {
         fs::path tmp = fs::temp_directory_path() / "decoder_header.json";
         {
             std::ofstream f(tmp, std::ios::binary);
             if (!f) { std::cerr << "错误: 无法创建临时文件\n"; return 1; }
             f << j.dump(2);
         }
-        const char* ed = std::getenv("VISUAL");
+        const char *ed = std::getenv("VISUAL");
         if (!ed) ed = std::getenv("EDITOR");
         if (!ed) ed = "vi";
         std::string cmd = std::string(ed) + " \"" + tmp.string() + "\"";
@@ -385,19 +568,18 @@ static int doModifyHead(const std::vector<std::string>& pos,
         if (!ok) { std::cerr << "错误: 无法读取临时文件\n"; return 1; }
         try {
             j = Json::parse(content);
-        } catch (const std::exception& ex) {
+        } catch (const std::exception &ex) {
             std::cerr << "错误: 编辑后的内容不是合法 JSON: " << ex.what() << "\n";
             return 1;
         }
-    } else {
+    }
+    else
+    {
         std::cout << "当前备注: " << j.getString("remarks") << "\n";
-        std::cout << "请输入新备注: ";
-        std::string line;
-        std::getline(std::cin, line);
+        std::string line = readLine("请输入新备注: ");
         j.set("remarks", line);
     }
 
-    // 保护关键字段，避免误改导致正文无法解密
     j.set("format",        (long long)kFormatVersion);
     j.set("original_name", origName);
     j.set("original_size", origSize);
@@ -405,7 +587,8 @@ static int doModifyHead(const std::vector<std::string>& pos,
     j.set("modified_at",   nowIso());
 
     std::string err;
-    if (!rewriteHeader(src, h, j, err)) {
+    if (!rewriteHeader(src, h, j, err))
+    {
         std::cerr << "错误: " << err << "\n";
         return 1;
     }
@@ -413,65 +596,73 @@ static int doModifyHead(const std::vector<std::string>& pos,
     std::cout << "Encryption Header   : \"" << j.getString("remarks") << "\"\n";
     std::cout << "Encryption Source IP: \"" << j.getString("source_ip") << "\"\n";
     return 0;
-                        }
+}
 
-                        // ---------------- 入口 ----------------
-                        int main(int argc, char** argv) {
-                            #ifdef _WIN32
-                            SetConsoleOutputCP(65001); // 设置控制台输出为 UTF-8，解决中文乱码
-                            #endif
-                            char op = 0;
-                            bool help = false, version = false;
-                            bool force = false, jsonOut = false, edit = false;
-                            bool hasRemarks = false, hasIp = false;
-                            std::string remarks, ip, outPath;
-                            std::vector<std::string> pos;
+// ---------------- 入口 ----------------
+int main(int argc, char **argv)
+{
+#ifdef _WIN32
+    SetConsoleOutputCP(65001);
+#endif
 
-                            for (int i = 1; i < argc; i++) {
-                                std::string a = argv[i];
-                                if (a == "-h" || a == "--help") { help = true; }
-                                else if (a == "-V" || a == "--version") { version = true; }
-                                else if (a == "-E" || a == "--encryption") { op = 'E'; }
-                                else if (a == "-U" || a == "-D" || a == "--decryption") { op = 'U'; }
-                                else if (a == "-R" || a == "--readinghead") { op = 'R'; }
-                                else if (a == "-M" || a == "--modifyhead") { op = 'M'; }
-                                else if (a == "-W" || a == "--wizard") { op = 'W'; }
-                                else if (a == "-f" || a == "--force") { force = true; }
-                                else if (a == "--json") { jsonOut = true; }
-                                else if (a == "-e" || a == "--edit") { edit = true; }
-                                else if (a == "--remarks") {
-                                    if (i + 1 >= argc) { std::cerr << "错误: --remarks 缺少参数\n"; return 1; }
-                                    remarks = argv[++i]; hasRemarks = true;
-                                }
-                                else if (a == "-i" || a == "--ip") {
-                                    if (i + 1 >= argc) { std::cerr << "错误: -i 缺少参数\n"; return 1; }
-                                    ip = argv[++i]; hasIp = true;
-                                }
-                                else if (a == "-o" || a == "--output") {
-                                    if (i + 1 >= argc) { std::cerr << "错误: -o 缺少参数\n"; return 1; }
-                                    outPath = argv[++i];
-                                }
-                                else if (!a.empty() && a[0] == '-' && a != "-") {
-                                    std::cerr << "错误: 未知选项 " << a << " (使用 -h 获取帮助)\n";
-                                    return 1;
-                                }
-                                else { pos.push_back(a); }
-                            }
+    char op = 0;
+    bool help = false, version = false;
+    bool force = false, jsonOut = false, edit = false;
+    bool hasRemarks = false, hasIp = false;
+    std::string remarks, ip, outPath;
+    std::vector<std::string> pos;
 
-                            if (version && !op) { std::cout << "decoder " << kVersion << "\n"; return 0; }
-                            if (op && help)     { printOpHelp(op); return 0; }
-                            if (help)           { printUsage(std::cout); return 0; }
-                            if (!op) {
-                                std::cerr << "没有指定操作 (使用 -h 获取帮助)\n";
-                                return 1;
-                            }
+    for (int i = 1; i < argc; i++)
+    {
+        std::string a = argv[i];
+        if (a == "-h" || a == "--help") { help = true; }
+        else if (a == "-V" || a == "--version") { version = true; }
+        else if (a == "-E" || a == "--encryption") { op = 'E'; }
+        else if (a == "-U" || a == "-D" || a == "--decryption") { op = 'U'; }
+        else if (a == "-R" || a == "--readinghead") { op = 'R'; }
+        else if (a == "-M" || a == "--modifyhead") { op = 'M'; }
+        else if (a == "-W" || a == "--wizard") { op = 'W'; }
+        else if (a == "-f" || a == "--force") { force = true; }
+        else if (a == "--json") { jsonOut = true; }
+        else if (a == "-e" || a == "--edit") { edit = true; }
+        else if (a == "--remarks")
+        {
+            if (i + 1 >= argc) { std::cerr << "错误: --remarks 缺少参数\n"; return 1; }
+            remarks = argv[++i]; hasRemarks = true;
+        }
+        else if (a == "-i" || a == "--ip")
+        {
+            if (i + 1 >= argc) { std::cerr << "错误: -i 缺少参数\n"; return 1; }
+            ip = argv[++i]; hasIp = true;
+        }
+        else if (a == "-o" || a == "--output")
+        {
+            if (i + 1 >= argc) { std::cerr << "错误: -o 缺少参数\n"; return 1; }
+            outPath = argv[++i];
+        }
+        else if (!a.empty() && a[0] == '-' && a != "-")
+        {
+            std::cerr << "错误: 未知选项 " << a << " (使用 -h 获取帮助)\n";
+            return 1;
+        }
+        else { pos.push_back(a); }
+    }
 
-                            switch (op) {
-                                case 'W': return doWizard();
-                                case 'E': return doEncrypt(pos, force);
-                                case 'U': return doDecrypt(pos, force, outPath);
-                                case 'R': return doReadHead(pos, jsonOut);
-                                case 'M': return doModifyHead(pos, hasRemarks, remarks, hasIp, ip, edit);
-                            }
-                            return 1;
-                        }
+    if (version && !op) { std::cout << "decoder " << kVersion << "\n"; return 0; }
+    if (op && help)     { printOpHelp(op); return 0; }
+    if (help)           { printUsage(std::cout); return 0; }
+    if (!op) {
+        std::cerr << "没有指定操作 (使用 -h 获取帮助)\n";
+        return 1;
+    }
+
+    switch (op)
+    {
+    case 'W': return doWizard();
+    case 'E': return doEncrypt(pos, force);
+    case 'U': return doDecrypt(pos, force, outPath);
+    case 'R': return doReadHead(pos, jsonOut);
+    case 'M': return doModifyHead(pos, hasRemarks, remarks, hasIp, ip, edit);
+    }
+    return 1;
+}
