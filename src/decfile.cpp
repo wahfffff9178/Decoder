@@ -108,33 +108,39 @@ DecError readHeader(const fs::path& p, const std::string& password, HeaderInfo& 
 static void addToArchive(std::ofstream& out, const fs::path& base, const fs::path& p) {
     std::string relPath = fs::relative(p, base).string();
     std::replace(relPath.begin(), relPath.end(), '\\', '/');
-    if (relPath.empty() || relPath == ".") return;
+    
+    // 如果不是根目录自身，则写入头部信息
+    if (relPath != "." && !relPath.empty()) {
+        if (fs::is_directory(p)) {
+            uint8_t type = 1;
+            uint32_t nameLen = (uint32_t)relPath.size();
+            uint64_t size = 0;
+            out.write((char*)&type, 1);
+            out.write((char*)&nameLen, 4);
+            out.write(relPath.data(), nameLen);
+            out.write((char*)&size, 8);
+        } else if (fs::is_regular_file(p)) {
+            uint8_t type = 0;
+            uint32_t nameLen = (uint32_t)relPath.size();
+            uint64_t size = fs::file_size(p);
+            out.write((char*)&type, 1);
+            out.write((char*)&nameLen, 4);
+            out.write(relPath.data(), nameLen);
+            out.write((char*)&size, 8);
 
+            std::ifstream in(p, std::ios::binary);
+            char buf[64 * 1024];
+            while (in) {
+                in.read(buf, sizeof(buf));
+                out.write(buf, in.gcount());
+            }
+        }
+    }
+    
+    // 核心修复：只要是目录，无论是不是根目录，都必须遍历子项！
     if (fs::is_directory(p)) {
-        uint8_t type = 1;
-        uint32_t nameLen = (uint32_t)relPath.size();
-        uint64_t size = 0;
-        out.write((char*)&type, 1);
-        out.write((char*)&nameLen, 4);
-        out.write(relPath.data(), nameLen);
-        out.write((char*)&size, 8);
         for (auto& entry : fs::directory_iterator(p)) {
             addToArchive(out, base, entry.path());
-        }
-    } else if (fs::is_regular_file(p)) {
-        uint8_t type = 0;
-        uint32_t nameLen = (uint32_t)relPath.size();
-        uint64_t size = fs::file_size(p);
-        out.write((char*)&type, 1);
-        out.write((char*)&nameLen, 4);
-        out.write(relPath.data(), nameLen);
-        out.write((char*)&size, 8);
-
-        std::ifstream in(p, std::ios::binary);
-        char buf[64 * 1024];
-        while (in) {
-            in.read(buf, sizeof(buf));
-            out.write(buf, in.gcount());
         }
     }
 }
