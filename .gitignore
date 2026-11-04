@@ -13,6 +13,11 @@ CMakeUserPresets.json
 build/
 build-linux/
 build-windows/
+aur/pkg
+aur/src
+aur/*.pkg.tar.gz
+aur/*.src.tar.gz
+aur/*.tar.gz
 *.dec
 *.exe
 
