@@ -1,16 +1,16 @@
-# Maintainer: wahfffff9178@aaa893285@outlook.com
+# Maintainer: wahfffff9178 aaa893285@outlook.com
 pkgname=deccoder
-pkgver=2.1.1
+pkgver=2.1.2
 pkgrel=1
 pkgdesc="A lightweight, cross-platform CLI encryption tool with ChaCha20 and HMAC-SHA256."
 arch=('x86_64' 'aarch64')
 url="https://github.com/wahfffff9178/deccoder"
-license=('GPLv3')
+license=('GPL-3.0-only')
 depends=('gcc-libs')
 makedepends=('cmake')
 #source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 source=("$pkgname-$pkgver.tar.gz::https://ghproxy.net/$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('83633406e3f6c375e5efa9087c386cd1c5fd70fef70f28e010efc46093953598')
 
 build() {
     cd "$srcdir/$pkgname-$pkgver"
