@@ -1,4 +1,4 @@
-# decoder v2.1.1
+# deccoder v2.1.1
 
 一个轻量、单文件、跨平台的 C++ 命令行加密工具。加密后生成 `.dec` 文件，文件头部携带可读元信息（备注、源 IP、原始文件名、创建时间等），正文用 ChaCha20 流式加密，并附带防篡改认证。
 
@@ -67,21 +67,21 @@ mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . -j
  
-产物位于 `build/decoder`（Windows 为 `build/decoder.exe`）。
+产物位于 `build/deccoder`（Windows 为 `build/deccoder.exe`）。
 
 ### 直接编译
 g++ -std=c++17 -O2 -Wall -Wextra \
     src/main.cpp src/crypto.cpp src/json.cpp src/decfile.cpp src/util.cpp \
-    -o decoder
+    -o deccoder
  
 Windows (MinGW) 需额外链接 Winsock：
-g++ -std=c++17 -O2 -Wall -Wextra src/*.cpp -o decoder.exe -lws2_32
+g++ -std=c++17 -O2 -Wall -Wextra src/*.cpp -o deccoder.exe -lws2_32
  
 ### 安装到 PATH
-sudo cp build/decoder /usr/local/bin/
+sudo cp build/deccoder /usr/local/bin/
  
 ## 用法
-decoder <操作> [...]
+deccoder <操作> [...]
  
 | 操作 | 长选项 | 说明 |
 |------|--------|------|
@@ -93,10 +93,10 @@ decoder <操作> [...]
 | `-h` | `--help`        | 帮助 |
 | `-V` | `--version`     | 版本号 |
 
-每个操作都有自己的子帮助，例如 `decoder -E -h`。
+每个操作都有自己的子帮助，例如 `deccoder -E -h`。
 
 ### 加密向导 `-W` (推荐新手使用)
-decoder -W
+deccoder -W
  
 运行后会进入一问一答模式，避免记错参数：
 1. 输入要加密的路径（支持从文件管理器直接拖拽，程序会自动去除路径两端的双引号）。
@@ -107,7 +107,7 @@ decoder -W
 
 ### 加密 `-E`
 
-decoder -E <路径> <密码> <备注> [-f]
+deccoder -E <路径> <密码> <备注> [-f]
  
 - `<路径>` 可以是文件或目录，目录会**递归**处理。
 - 已存在的 `.dec` 文件默认跳过，避免重复加密。
@@ -115,17 +115,17 @@ decoder -E <路径> <密码> <备注> [-f]
 - `-f, --force` 覆盖已存在的 `.dec` 文件。
 
 # 加密单文件
-decoder -E ./report.docx "mypass" "季度报告"
+deccoder -E ./report.docx "mypass" "季度报告"
 
 # 无密码加密整个目录
-decoder -E ./photos "" "家庭相册"
+deccoder -E ./photos "" "家庭相册"
 
 # 强制覆盖
-decoder -E ./a.txt "pw" "示例" -f
+deccoder -E ./a.txt "pw" "示例" -f
  
 ### 解密 `-U`
 
-decoder -U <dec文件路径> [密码] [-o <输出>] [-f]
+deccoder -U <dec文件路径> [密码] [-o <输出>] [-f]
  
 - 默认按头部记录的 `original_name` 还原到 `.dec` 文件所在目录。
 - `-o, --output` 可指定目标文件或目标目录。
@@ -133,13 +133,13 @@ decoder -U <dec文件路径> [密码] [-o <输出>] [-f]
 - 如果 MAC 校验失败（文件被篡改或损坏），将拒绝解密。
 
 # 解密到原目录
-decoder -U ./report.docx.dec "mypass"
+deccoder -U ./report.docx.dec "mypass"
 
 # 解密到指定目录
-decoder -U ./report.docx.dec "mypass" -o ./restored/
+deccoder -U ./report.docx.dec "mypass" -o ./restored/
 
 # 指定输出文件并覆盖
-decoder -U ./report.docx.dec "mypass" -o ./x.docx -f
+deccoder -U ./report.docx.dec "mypass" -o ./x.docx -f
  
 成功时输出：
  
@@ -153,18 +153,18 @@ Encryption Source IP: "112.65.12.34"
  
 ### 读头 `-R`
 
-decoder -R <dec文件路径> [密码] [--json]
+deccoder -R <dec文件路径> [密码] [--json]
  
 - 默认输出易读摘要。
 - `--json` 输出完整 JSON，便于脚本处理。
 - 只解密头部，不触碰正文，速度快。
 
-decoder -R ./report.docx.dec "mypass"
-decoder -R ./report.docx.dec "mypass" --json
+deccoder -R ./report.docx.dec "mypass"
+deccoder -R ./report.docx.dec "mypass" --json
  
 ### 改头 `-M`
 
-decoder -M <dec文件路径> [密码] [--remarks <文本>] [-i <IP>] [-e]
+deccoder -M <dec文件路径> [密码] [--remarks <文本>] [-i <IP>] [-e]
  
 | 选项 | 说明 |
 |------|------|
@@ -175,10 +175,10 @@ decoder -M <dec文件路径> [密码] [--remarks <文本>] [-i <IP>] [-e]
 
 修改仅重写头部，正文密文原样保留，同时系统会自动扫描正文并重新计算全文件 MAC 签名，速度极快。
 
-decoder -M ./report.docx.dec "mypass" --remarks "已归档"
-decoder -M ./report.docx.dec "mypass" -i 10.0.0.1
-decoder -M ./report.docx.dec "mypass" -e
-decoder -M ./report.docx.dec "mypass"       # 交互式
+deccoder -M ./report.docx.dec "mypass" --remarks "已归档"
+deccoder -M ./report.docx.dec "mypass" -i 10.0.0.1
+deccoder -M ./report.docx.dec "mypass" -e
+deccoder -M ./report.docx.dec "mypass"       # 交互式
  
 > `format`、`original_name`、`original_size`、`body_nonce` 为保护字段，即使在编辑器里改了也会被强制还原，防止正文无法解密。
 
@@ -187,7 +187,7 @@ decoder -M ./report.docx.dec "mypass"       # 交互式
 | 提示 | 含义 |
 |------|------|
 | `这不是一个DEC加密文件` | 文件头魔数不是 `DECF` |
-| `dec版本大于当前decoder版本：此版本不支持这个Dec文件` | 文件格式版本比当前程序高 |
+| `dec版本大于当前deccoder版本：此版本不支持这个Dec文件` | 文件格式版本比当前程序高 |
 | `此文件需要密码` | 文件头标记了需要密码，但未提供 |
 | `密码错误` | 密码不对（通过头部 `check` 字段校验） |
 | `文件已被篡改或损坏 (MAC 校验失败)` | 文件在传输中被截断、修改，或伪造的密文 |
@@ -199,7 +199,7 @@ decoder -M ./report.docx.dec "mypass"       # 交互式
 ## 项目结构
 
  
-decoder/
+deccoder/
 ├── CMakeLists.txt
 ├── README.md
 └── src/
@@ -212,14 +212,14 @@ decoder/
 ## 快速自测
 
 # 使用交互向导加密
-./build/decoder -W
+./build/deccoder -W
 
 # 命令行快捷加密
-echo "hello decoder" > t.txt
-./build/decoder -E t.txt "pw" "测试"           # 生成 t.txt.dec
-./build/decoder -R t.txt.dec "pw"              # 查看头部
-./build/decoder -M t.txt.dec "pw" --remarks "改过的备注"
-./build/decoder -U t.txt.dec "pw" -f           # 还原 t.txt
+echo "hello deccoder" > t.txt
+./build/deccoder -E t.txt "pw" "测试"           # 生成 t.txt.dec
+./build/deccoder -R t.txt.dec "pw"              # 查看头部
+./build/deccoder -M t.txt.dec "pw" --remarks "改过的备注"
+./build/deccoder -U t.txt.dec "pw" -f           # 还原 t.txt
 
 ## 许可证
 

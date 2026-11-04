@@ -1,0 +1,23 @@
+# Maintainer: wahfffff9178@aaa893285@outlook.com
+pkgname=deccoder
+pkgver=2.1.1
+pkgrel=1
+pkgdesc="A lightweight, cross-platform CLI encryption tool with ChaCha20 and HMAC-SHA256."
+arch=('x86_64' 'aarch64')
+url="https://github.com/wahfffff9178/deccoder"
+license=('GPLv3')
+depends=('gcc-libs')
+makedepends=('cmake')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$srcdir/$pkgname-$pkgver"
+    cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+    cmake --build build
+}
+
+package() {
+    cd "$srcdir/$pkgname-$pkgver"
+    DESTDIR="$pkgdir" cmake --install build
+}
