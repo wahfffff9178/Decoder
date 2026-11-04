@@ -8,8 +8,8 @@ url="https://github.com/wahfffff9178/deccoder"
 license=('GPL-3.0-only')
 depends=('gcc-libs')
 makedepends=('cmake')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('0a439e60e632f4e5a2d26cc4ffe2e457b9a06fda5d2972e5841276500adee242')
+source=("deccoder-2.1.2.tar.gz")
+sha256sums=('088395990d435dd601cfd9617f4dbdab5b541a0528b82f2e6363036ef80e1443')
 
 build() {
     cd "$srcdir/$pkgname-$pkgver"

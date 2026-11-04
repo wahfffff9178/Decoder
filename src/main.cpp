@@ -156,24 +156,24 @@ static std::string readLine(const std::string &prompt, bool hide = false)
     return buf;
 }
 
-static const char *kVersion = "2.1.2";
+static const char *kVersion = "2.1.3";
 static int doEncrypt(const std::vector<std::string> &pos, bool force);
 static int doWizard();
 
 // ---------------- 帮助 ----------------
 static void printUsage(std::ostream &os)
 {
-    os << "用法:  decoder <操作> [...]\n"
+    os << "用法:  deccoder <操作> [...]\n"
           "操作:\n"
-          "    decoder {-h --help}\n"
-          "    decoder {-V --version}\n"
-          "    decoder {-E --encryption} [文件/文件夹路径] <密码> <备注>\n"
-          "    decoder {-D -U --decryption} [dec文件路径] <密码>\n"
-          "    decoder {-R --readinghead} [dec文件路径] <密码>\n"
-          "    decoder {-W --wizard}                         (交互式加密向导)\n"
-          "    decoder {-M --modifyhead} [dec文件路径] <密码>\n"
+          "    deccoder {-h --help}\n"
+          "    deccoder {-V --version}\n"
+          "    deccoder {-E --encryption} [文件/文件夹路径] <密码> <备注>\n"
+          "    deccoder {-D -U --decryption} [dec文件路径] <密码>\n"
+          "    deccoder {-R --readinghead} [dec文件路径] <密码>\n"
+          "    deccoder {-W --wizard}                         (交互式加密向导)\n"
+          "    deccoder {-M --modifyhead} [dec文件路径] <密码>\n"
           "\n"
-          "使用 'decoder {-h --help}' 及某个操作以查看可用选项\n";
+          "使用 'deccoder {-h --help}' 及某个操作以查看可用选项\n";
 }
 
 static void printOpHelp(char op)
@@ -540,7 +540,7 @@ static int doModifyHead(const std::vector<std::string> &pos,
     } else if (hasIp) {
         j.set("source_ip", ip);
     } else if (edit) {
-        fs::path tmp = fs::temp_directory_path() / "decoder_header.json";
+        fs::path tmp = fs::temp_directory_path() / "deccoder_header.json";
         {
             std::ofstream f(tmp, std::ios::binary);
             if (!f) { std::cerr << "错误: 无法创建临时文件\n"; return 1; }
@@ -631,7 +631,7 @@ int main(int argc, char **argv)
         else { pos.push_back(a); }
     }
 
-    if (version && !op) { std::cout << "decoder " << kVersion << "\n"; return 0; }
+    if (version && !op) { std::cout << "deccoder " << kVersion << "\n"; return 0; }
     if (op && help)     { printOpHelp(op); return 0; }
     if (help)           { printUsage(std::cout); return 0; }
     if (!op) {
