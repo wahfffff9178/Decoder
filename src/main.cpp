@@ -48,7 +48,6 @@ static void detect_language()
         }
     }
 #ifdef _WIN32
-    // Windows 下如果默认代码页是 936 (GBK)，或者系统区域是中文
     if (GetACP() == 936) use_zh = true;
 #endif
 }
@@ -187,8 +186,8 @@ static std::string readLine(const std::string &prompt, bool hide = false)
     return buf;
 }
 
-static const char *kVersion = "2.1.3";
-static int doEncrypt(const std::vector<std::string> &pos, bool force);
+static const char *kVersion = "2.2.1"; // 版本号升级
+static int doEncrypt(const std::vector<std::string> &pos, bool force, bool remove_source);
 static int doWizard();
 
 // ---------------- 帮助 ----------------
@@ -230,6 +229,7 @@ static void printOpHelp(char op)
             std::cout << "-E, --encryption  加密文件或整个文件夹（递归处理，自动跳过 .dec 文件）\n"
                          "可用选项:\n"
                          "    -f, --force          覆盖已存在的 .dec 文件\n"
+                         "    -r, --remove         加密成功后删除源文件/文件夹\n"
                          "位置参数:\n"
                          "    <路径>   要加密的文件或文件夹\n"
                          "    <密码>   加密密码，传 \"\" 表示无密码\n"
@@ -238,6 +238,7 @@ static void printOpHelp(char op)
             std::cout << "-E, --encryption  Encrypt a file or folder (recursive, skips .dec files)\n"
                          "Options:\n"
                          "    -f, --force          Overwrite existing .dec files\n"
+                         "    -r, --remove         Remove source file/folder after successful encryption\n"
                          "Arguments:\n"
                          "    <path>   File or folder to encrypt\n"
                          "    <password> Encryption password, \"\" for no password\n"
@@ -374,12 +375,18 @@ static int doWizard()
                         "Overwrite existing .dec file if it exists? (y/N): "));
     bool force = (!choice.empty() && (choice[0] == 'y' || choice[0] == 'Y'));
 
+    std::cout << "\n";
+    choice = readLine(T("加密成功后是否删除源文件/文件夹? (y/N): ",
+                        "Remove source file/folder after successful encryption? (y/N): "));
+    bool remove_source = (!choice.empty() && (choice[0] == 'y' || choice[0] == 'Y'));
+
     std::cout << T("\n================ 确认加密信息 ================\n",
                    "\n================ Confirm Encryption Info ================\n");
     std::cout << T("目标路径: ", "Target path: ") << path.string() << "\n";
     std::cout << T("密码保护: ", "Password: ") << (password.empty() ? T("否", "No") : T("是", "Yes")) << "\n";
     std::cout << T("备注信息: ", "Remarks: ") << (remarks.empty() ? T("(空)", "(empty)") : remarks) << "\n";
-    std::cout << T("强制覆盖: ", "Force overwrite: ") << (force ? T("是", "Yes") : T("否", "No")) << "\n\n";
+    std::cout << T("强制覆盖: ", "Force overwrite: ") << (force ? T("是", "Yes") : T("否", "No")) << "\n";
+    std::cout << T("删除源文件: ", "Remove source: ") << (remove_source ? T("是", "Yes") : T("否", "No")) << "\n\n";
 
     choice = readLine(T("是否开始加密? (Y/n): ", "Start encryption? (Y/n): "));
     if (!choice.empty() && (choice[0] == 'n' || choice[0] == 'N')) {
@@ -389,11 +396,11 @@ static int doWizard()
 
     std::cout << T("\n开始处理...\n\n", "\nProcessing...\n\n");
     std::vector<std::string> pos = {path.string(), password, remarks};
-    return doEncrypt(pos, force);
+    return doEncrypt(pos, force, remove_source);
 }
 
 // ---------------- 操作：加密 ----------------
-static int doEncrypt(const std::vector<std::string> &pos, bool force)
+static int doEncrypt(const std::vector<std::string> &pos, bool force, bool remove_source)
 {
     if (pos.size() < 3) {
         std::cerr << T("错误: 参数不足，需要 <路径> <密码> <备注> (使用 -E -h 获取帮助)\n",
@@ -410,44 +417,59 @@ static int doEncrypt(const std::vector<std::string> &pos, bool force)
         return 1;
     }
 
-    std::vector<fs::path> files;
-    if (fs::is_directory(path, ec)) {
-        for (auto &e : fs::recursive_directory_iterator(
-                 path, fs::directory_options::skip_permission_denied, ec)) {
-            if (e.is_regular_file()) files.push_back(e.path());
-        }
-    } else files.push_back(path);
+    fs::path dst = path;
+    dst += ".dec";
+    
+    if (fs::exists(dst, ec) && !force) {
+        std::cerr << T("错误: 目标已存在: ", "Error: Target exists: ") << dst.string() << T(" (使用 -f 覆盖)\n", " (use -f to overwrite)\n");
+        return 1;
+    }
 
-    int ok = 0, skip = 0, fail = 0;
-    for (auto &f : files)
-    {
-        std::string name = f.filename().string();
-        if (name.size() >= 4 && name.compare(name.size() - 4, 4, ".dec") == 0) {
-            std::cout << T("[跳过] ", "[Skip] ") << f.string() << T(" (已是 DEC 文件)\n", " (Already a DEC file)\n");
-            skip++;
-            continue;
-        }
-        fs::path dst = f;
-        dst += ".dec";
-        if (fs::exists(dst, ec) && !force) {
-            std::cout << T("[跳过] ", "[Skip] ") << dst.string() << T(" (目标已存在，使用 -f 覆盖)\n", " (Target exists, use -f to overwrite)\n");
-            skip++;
-            continue;
-        }
+    // 如果是目录，先打包成临时文件
+    if (fs::is_directory(path, ec)) {
+        std::cout << T("正在打包文件夹...\n", "Packing directory...\n");
+        fs::path tmpArchive = fs::temp_directory_path() / (path.filename().string() + ".tmp");
+        
         std::string err;
-        if (encryptFile(f, dst, password, remarks, false, err)) {
-            std::cout << T("[完成] ", "[Done] ") << f.string() << " -> " << dst.string() << "\n";
-            ok++;
+        if (!packDirectory(path, tmpArchive, err)) {
+            std::cerr << T("[失败] 打包目录出错: ", "[Fail] Packing directory failed: ") << err << "\n";
+            return 1;
+        }
+
+        std::cout << T("正在加密归档...\n", "Encrypting archive...\n");
+        bool ok = encryptFile(tmpArchive, dst, password, remarks, true, err);
+        fs::remove(tmpArchive);
+
+        if (ok) {
+            std::cout << T("[完成] ", "[Done] ") << path.string() << " -> " << dst.string() << "\n";
+            if (remove_source) {
+                std::error_code rm_ec;
+                fs::remove_all(path, rm_ec);
+                if (rm_ec) std::cerr << T("警告: 删除源文件夹失败: ", "Warning: Failed to remove source folder: ") << rm_ec.message() << "\n";
+                else std::cout << T("[删除] 已删除源文件夹: ", "[Removed] Source folder deleted: ") << path.string() << "\n";
+            }
+            return 0;
         } else {
-            std::cerr << T("[失败] ", "[Fail] ") << f.string() << ": " << err << "\n";
-            fail++;
+            std::cerr << T("[失败] ", "[Fail] ") << path.string() << ": " << err << "\n";
+            return 1;
+        }
+    } else {
+        // 普通文件
+        std::string err;
+        if (encryptFile(path, dst, password, remarks, false, err)) {
+            std::cout << T("[完成] ", "[Done] ") << path.string() << " -> " << dst.string() << "\n";
+            if (remove_source) {
+                std::error_code rm_ec;
+                fs::remove(path, rm_ec);
+                if (rm_ec) std::cerr << T("警告: 删除源文件失败: ", "Warning: Failed to remove source file: ") << rm_ec.message() << "\n";
+                else std::cout << T("[删除] 已删除源文件: ", "[Removed] Source file deleted: ") << path.string() << "\n";
+            }
+            return 0;
+        } else {
+            std::cerr << T("[失败] ", "[Fail] ") << path.string() << ": " << err << "\n";
+            return 1;
         }
     }
-    std::cout << T("共 ", "Total ") << files.size()
-              << T(" 个文件，成功 ", " files, Success: ") << ok
-              << T("，跳过 ", ", Skip: ") << skip
-              << T("，失败 ", ", Fail: ") << fail << "\n";
-    return fail ? 1 : 0;
 }
 
 // ---------------- 操作：解密 ----------------
@@ -464,49 +486,100 @@ static int doDecrypt(const std::vector<std::string> &pos, bool force, const std:
     HeaderInfo h;
     DecError e = readHeader(src, password, h);
     if (e != DecError::Ok) {
-        // decErrorText 目前是中文的，我们这里做个简单的映射，或者直接输出。
-        // 因为 decErrorText 是外部定义的，我们这里直接用
         std::cerr << T("错误: ", "Error: ") << decErrorText(e) << "\n";
         return 1;
     }
 
     std::string origName = h.json.getString("original_name");
     if (origName.empty()) origName = src.stem().string();
+    bool is_archive = (h.json.getInt("is_archive") != 0);
 
-    fs::path dst;
-    if (!outPath.empty()) {
-        fs::path o = outPath;
+    if (is_archive) {
+        if (origName.size() > 4 && origName.compare(origName.size() - 4, 4, ".tmp") == 0) {
+            origName = origName.substr(0, origName.size() - 4);
+        }
+        
+        fs::path dstDir;
+        if (!outPath.empty()) {
+            fs::path o = outPath;
+            std::error_code ec;
+            if (fs::is_directory(o, ec) || outPath.back() == '/' || outPath.back() == '\\') {
+                dstDir = o / origName;
+            } else {
+                dstDir = o;
+            }
+        } else {
+            dstDir = src.parent_path() / origName;
+        }
+
         std::error_code ec;
-        if (fs::is_directory(o, ec)) dst = o / origName;
-        else dst = o;
+        if (fs::exists(dstDir, ec) && !force) {
+            std::cerr << T("错误: 目标目录已存在: ", "Error: Target directory exists: ") << dstDir.string() << T(" (使用 -f 覆盖)\n", " (use -f to overwrite)\n");
+            return 1;
+        }
+
+        fs::path tmpArchive = fs::temp_directory_path() / (origName + ".dec_tmp");
+        e = decryptBody(src, h, tmpArchive);
+        if (e != DecError::Ok) {
+            std::cerr << T("错误: ", "Error: ") << decErrorText(e) << "\n";
+            fs::remove(tmpArchive);
+            return 1;
+        }
+
+        std::cout << T("正在解包...\n", "Unpacking...\n");
+        std::string err;
+        if (!unpackArchive(tmpArchive, dstDir, err)) {
+            std::cerr << T("错误: 解包失败: ", "Error: Unpacking failed: ") << err << "\n";
+            fs::remove(tmpArchive);
+            return 1;
+        }
+        fs::remove(tmpArchive);
+
+        std::cout << T("---------------解密完成---------------\n\n",
+                       "---------------Decryption complete---------------\n\n");
+        std::cout << T("解密文件: ", "Decryption file: ") << src.string()
+                  << T(" 解密至目标目录 ", " decrypted to target directory ") << dstDir.string() << "\n";
+        std::cout << T("加密备注: ", "Encryption Header   : \"") << h.json.getString("remarks") << "\"\n";
+        std::cout << T("源 IP: ", "Encryption Source IP: \"") << h.json.getString("source_ip") << "\"\n";
+        std::cout << "\n------------------------------------------------------\n";
+        return 0;
+
     } else {
-        dst = src.parent_path() / origName;
-    }
+        fs::path dst;
+        if (!outPath.empty()) {
+            fs::path o = outPath;
+            std::error_code ec;
+            if (fs::is_directory(o, ec)) dst = o / origName;
+            else dst = o;
+        } else {
+            dst = src.parent_path() / origName;
+        }
 
-    std::error_code ec;
-    if (fs::exists(dst, ec) && !force) {
-        std::cerr << T("错误: 目标文件已存在: ", "Error: Target file exists: ") << dst.string() << T(" (使用 -f 覆盖)\n", " (use -f to overwrite)\n");
-        return 1;
-    }
-    if (fs::equivalent(src, dst, ec)) {
-        std::cerr << T("错误: 目标文件与源文件相同: ", "Error: Target file is the same as source: ") << dst.string() << "\n";
-        return 1;
-    }
+        std::error_code ec;
+        if (fs::exists(dst, ec) && !force) {
+            std::cerr << T("错误: 目标文件已存在: ", "Error: Target file exists: ") << dst.string() << T(" (使用 -f 覆盖)\n", " (use -f to overwrite)\n");
+            return 1;
+        }
+        if (fs::equivalent(src, dst, ec)) {
+            std::cerr << T("错误: 目标文件与源文件相同: ", "Error: Target file is the same as source: ") << dst.string() << "\n";
+            return 1;
+        }
 
-    e = decryptBody(src, h, dst);
-    if (e != DecError::Ok) {
-        std::cerr << T("错误: ", "Error: ") << decErrorText(e) << "\n";
-        return 1;
-    }
+        e = decryptBody(src, h, dst);
+        if (e != DecError::Ok) {
+            std::cerr << T("错误: ", "Error: ") << decErrorText(e) << "\n";
+            return 1;
+        }
 
-    std::cout << T("---------------解密完成---------------\n\n",
-                   "---------------Decryption complete---------------\n\n");
-    std::cout << T("解密文件: ", "Decryption file: ") << src.string()
-              << T(" 解密至目标文件 ", " decrypted to target file ") << dst.string() << "\n";
-    std::cout << T("加密备注: ", "Encryption Header   : \"") << h.json.getString("remarks") << "\"\n";
-    std::cout << T("源 IP: ", "Encryption Source IP: \"") << h.json.getString("source_ip") << "\"\n";
-    std::cout << "\n------------------------------------------------------\n";
-    return 0;
+        std::cout << T("---------------解密完成---------------\n\n",
+                       "---------------Decryption complete---------------\n\n");
+        std::cout << T("解密文件: ", "Decryption file: ") << src.string()
+                  << T(" 解密至目标文件 ", " decrypted to target file ") << dst.string() << "\n";
+        std::cout << T("加密备注: ", "Encryption Header   : \"") << h.json.getString("remarks") << "\"\n";
+        std::cout << T("源 IP: ", "Encryption Source IP: \"") << h.json.getString("source_ip") << "\"\n";
+        std::cout << "\n------------------------------------------------------\n";
+        return 0;
+    }
 }
 
 // ---------------- 操作：读头 ----------------
@@ -545,6 +618,9 @@ static int doReadHead(const std::vector<std::string> &pos, bool jsonOut)
     std::cout << T("DEC 加密文件 ", "DEC Encrypted File ") << src.string() << ":\n";
     std::cout << T("加密备注: ", "Encryption Header   : \"") << h.json.getString("remarks") << "\"\n";
     std::cout << T("源 IP: ", "Encryption Source IP: \"") << h.json.getString("source_ip") << "\"\n";
+    if (h.json.getInt("is_archive") != 0) {
+         std::cout << T("类型: 归档 (文件夹)\n", "Type                : Archive (Folder)\n");
+    }
     std::cout << "\n------------------------------------------------------\n";
     return 0;
 }
@@ -637,7 +713,7 @@ int main(int argc, char **argv)
 
     char op = 0;
     bool help = false, version = false;
-    bool force = false, jsonOut = false, edit = false;
+    bool force = false, jsonOut = false, edit = false, remove_source = false;
     bool hasRemarks = false, hasIp = false;
     std::string remarks, ip, outPath;
     std::vector<std::string> pos;
@@ -652,6 +728,7 @@ int main(int argc, char **argv)
         else if (a == "-M" || a == "--modifyhead") { op = 'M'; }
         else if (a == "-W" || a == "--wizard") { op = 'W'; }
         else if (a == "-f" || a == "--force") { force = true; }
+        else if (a == "-r" || a == "--remove") { remove_source = true; }
         else if (a == "--json") { jsonOut = true; }
         else if (a == "-e" || a == "--edit") { edit = true; }
         else if (a == "--remarks") {
@@ -683,7 +760,7 @@ int main(int argc, char **argv)
 
     switch (op) {
     case 'W': return doWizard();
-    case 'E': return doEncrypt(pos, force);
+    case 'E': return doEncrypt(pos, force, remove_source);
     case 'U': return doDecrypt(pos, force, outPath);
     case 'R': return doReadHead(pos, jsonOut);
     case 'M': return doModifyHead(pos, hasRemarks, remarks, hasIp, ip, edit);
